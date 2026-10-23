@@ -1,0 +1,27 @@
+{
+  "current_level": "N4",
+  "total_calls": 0,
+  "level_stats": {
+    "N4": {
+      "calls_completed": 0,
+      "pass_count": 0,
+      "mastery_score": 0
+    },
+    "N3": {
+      "calls_completed": 0,
+      "pass_count": 0,
+      "mastery_score": 0
+    },
+    "N2": {
+      "calls_completed": 0,
+      "pass_count": 0,
+      "mastery_score": 0
+    },
+    "N1": {
+      "calls_completed": 0,
+      "pass_count": 0,
+      "mastery_score": 0
+    }
+  },
+  "history": []
+}
