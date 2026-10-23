@@ -164,7 +164,16 @@ startCallBtn.addEventListener("click", async () => {
     };
 
   } catch (err) {
-    alert("마이크 사용 권한이 필요합니다: " + err.message);
+    console.error("Microphone access error:", err);
+    let tip = "마이크 접근 중 문제가 발생했습니다.";
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      tip = "🎤 마이크 권한이 차단되어 있습니다!\n\n[해결 방법]\n• PC: 주소창 왼쪽의 자물쇠(🔒) 또는 설정 아이콘을 누르고 [마이크]를 '허용'으로 변경해 주세요.\n• 모바일: 브라우저 상단/설정에서 마이크 접근을 '허용'해 주세요.\n(⚠️ 모바일에서는 반드시 https:// 로 시작하는 Render 주소로 접속해야 마이크가 허용됩니다)";
+    } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      tip = "연결된 마이크가 없습니다. 이어폰이나 마이크를 연결한 후 다시 시도해 주세요.";
+    } else {
+      tip = "마이크 오류: " + err.message;
+    }
+    alert(tip);
     callStatusText.textContent = "마이크 권한 필요";
     startCallBtn.disabled = false;
   }

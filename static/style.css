@@ -733,3 +733,100 @@ body {
   padding: 40px 0;
   font-size: 14px;
 }
+
+/* =========================================================
+   Mobile Responsive Layout (스마트폰 최적화)
+   - 모바일 접속 시 '프리토킹 꿀팁'을 통화 화면 하단으로 배치
+   ========================================================= */
+@media (max-width: 768px) {
+  body {
+    padding: 12px 8px;
+    align-items: flex-start;
+  }
+
+  .desktop-container {
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    width: 100%;
+  }
+
+  /* 스마트폰에서는 통화 화면이 화면 너비에 맞게 꽉 차도록 */
+  .phone-frame {
+    width: 100%;
+    max-width: 440px;
+    height: auto;
+    min-height: 700px;
+    border-radius: 32px;
+    border: 2px solid #334155;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+
+  .phone-header {
+    padding: 16px 18px 10px;
+  }
+
+  .calling-area {
+    padding: 16px 14px 12px;
+  }
+
+  .avatar-circle {
+    width: 100px;
+    height: 100px;
+  }
+
+  .avatar-emoji {
+    font-size: 44px;
+  }
+
+  .pulse-ring {
+    width: 100px;
+    height: 100px;
+  }
+
+  .character-name {
+    font-size: 20px;
+    margin-top: 12px;
+  }
+
+  .subtitles-container {
+    max-height: 150px;
+    margin: 12px 0;
+  }
+
+  .subtitle-bubble {
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+
+  .call-controls {
+    padding: 16px 20px 24px;
+  }
+
+  /* 프리토킹 꿀팁 및 복습함 패널을 전체 화면 최하단에 배치 */
+  .side-info-panel {
+    width: 100%;
+    max-width: 440px;
+    margin-top: 10px;
+    margin-bottom: 50px;
+    gap: 16px;
+  }
+
+  .info-card {
+    padding: 18px 20px;
+    border-radius: 20px;
+  }
+
+  .info-card h3 {
+    font-size: 16px;
+  }
+
+  .guide-card li {
+    font-size: 13px;
+  }
+
+  .modal-card {
+    max-width: 95vw;
+    border-radius: 20px;
+  }
+}
