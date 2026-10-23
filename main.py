@@ -248,5 +248,11 @@ def main():
         print("\n프로그램이 종료되었습니다.")
 
 
+# Alias app for hosting platforms (e.g. Vercel) that look for 'app' in main.py
+try:
+    from web_server import app
+except Exception:
+    pass
+
 if __name__ == "__main__":
     main()
