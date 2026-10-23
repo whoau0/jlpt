@@ -30,7 +30,10 @@ const callingArea = document.getElementById("callingArea");
 const feedbackArea = document.getElementById("feedbackArea");
 const feedbackContent = document.getElementById("feedbackContent");
 const retryBtn = document.getElementById("retryBtn");
-const openLogsFolderBtn = document.getElementById("openLogsFolderBtn");
+const openHistoryModalBtn = document.getElementById("openHistoryModalBtn");
+const historyModal = document.getElementById("historyModal");
+const closeHistoryModalBtn = document.getElementById("closeHistoryModalBtn");
+const historyListContent = document.getElementById("historyListContent");
 
 // Load Profile on startup
 async function loadProfile() {
@@ -349,12 +352,56 @@ retryBtn.addEventListener("click", () => {
   updateStageUI(1, "일상 및 취미", "N5 기초 수준");
 });
 
-// 10. Open Logs Folder API
-openLogsFolderBtn.addEventListener("click", async () => {
+// 10. Open History Modal (Cloud Supabase)
+openHistoryModalBtn.addEventListener("click", async () => {
+  historyModal.style.display = "flex";
+  historyListContent.innerHTML = "<p class='modal-empty-msg'>클라우드에서 지난 통화 기록을 불러오는 중...</p>";
+
   try {
-    const res = await fetch("/api/open-logs", { method: "POST" });
-    if (!res.ok) alert("폴더 열기에 실패했습니다.");
-  } catch (e) {
-    alert("오류 발생: " + e.message);
+    const res = await fetch("/api/history");
+    if (!res.ok) throw new Error("기록 조회 실패");
+    const list = await res.json();
+
+    if (!list || list.length === 0) {
+      historyListContent.innerHTML = "<p class='modal-empty-msg'>아직 저장된 통화 기록이 없습니다.<br>키라키라와 첫 통화를 완료해보세요!</p>";
+      return;
+    }
+
+    historyListContent.innerHTML = list.map((item) => {
+      const dateStr = new Date(item.created_at).toLocaleDateString("ko-KR", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+      const minutes = Math.floor((item.duration_seconds || 0) / 60);
+      const seconds = (item.duration_seconds || 0) % 60;
+      const passTag = item.passed ? "✅ 패스" : "📝 연습";
+
+      return `
+        <div class="history-item-card">
+          <div class="history-item-top">
+            <span class="history-badge">JLPT ${item.target_level || "N4"} • ${passTag} (${item.score || 0}점)</span>
+            <span class="history-date">${dateStr} (${minutes}분 ${seconds}초)</span>
+          </div>
+          <div class="history-content">
+            ${(item.feedback_markdown || "대화 요약 없음").replace(/#/g, "").replace(/\*\*/g, "").slice(0, 300)}...
+          </div>
+        </div>
+      `;
+    }).join("");
+
+  } catch (err) {
+    historyListContent.innerHTML = `<p class='modal-empty-msg'>기록 불러오기 오류: ${err.message}</p>`;
+  }
+});
+
+closeHistoryModalBtn.addEventListener("click", () => {
+  historyModal.style.display = "none";
+});
+
+window.addEventListener("click", (e) => {
+  if (e.target === historyModal) {
+    historyModal.style.display = "none";
   }
 });

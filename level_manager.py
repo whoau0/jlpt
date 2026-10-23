@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from db import fetch_profile, sync_profile
 
 PROFILE_FILE = Path("user_profile.json")
 
@@ -71,12 +72,9 @@ class LevelManager:
         self.profile = self.load_profile()
 
     def load_profile(self) -> dict:
-        if PROFILE_FILE.exists():
-            try:
-                with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
+        remote_data = fetch_profile()
+        if remote_data:
+            return remote_data
 
         # Default initial profile (Starts at N4)
         default_profile = {
@@ -96,8 +94,7 @@ class LevelManager:
     def save_profile(self, data: dict = None):
         if data is None:
             data = self.profile
-        with open(PROFILE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        sync_profile(data)
 
     def get_current_level(self) -> str:
         return self.profile.get("current_level", "N4")

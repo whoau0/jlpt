@@ -7,6 +7,7 @@ from pathlib import Path
 
 from config import GEMINI_API_KEY
 from level_manager import LevelManager
+from db import record_conversation_to_supabase
 
 
 FEEDBACK_PROMPT_TEMPLATE = """
@@ -138,6 +139,16 @@ def generate_post_call_feedback(transcript_records: list[dict], duration_seconds
         banner = f"\n\n---\n## 🎊 축하합니다! JLPT {new_lvl}로 레벨업 하셨습니다!\n" \
                  f"JLPT {curr_level} 대화 기준을 훌륭히 마스터하셨습니다. 다음 통화부터는 **JLPT {new_lvl}** 맞춤 대화로 진행됩니다! ✨\n"
         clean_md += banner
+
+    # Sync conversation to Supabase cloud
+    record_conversation_to_supabase(
+        duration_seconds=duration_seconds,
+        target_level=curr_level,
+        score=score,
+        passed=passed,
+        transcript=transcript_records,
+        feedback_markdown=clean_md,
+    )
 
     try:
         logs_dir = Path("logs")

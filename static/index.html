@@ -163,11 +163,24 @@
 
       <div class="info-card logs-card">
         <h3>📁 저장된 통화 기록</h3>
-        <p class="logs-desc">통화가 끝나면 <code>logs/</code> 폴더에 대화 전문과 복습 리포트가 자동 저장됩니다.</p>
-        <button class="open-logs-btn" id="openLogsFolderBtn">📂 저장 폴더 확인하기</button>
+        <p class="logs-desc">모든 통화 기록과 복습 노트는 <strong>Supabase 클라우드</strong>에 영구 저장됩니다.</p>
+        <button class="open-logs-btn" id="openHistoryModalBtn">☁️ 클라우드 복습 노트함 보기</button>
       </div>
     </aside>
 
+  </div>
+
+  <!-- History Modal (Past Notes) -->
+  <div class="modal-backdrop" id="historyModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>☁️ 지난 통화 & 복습 노트함</h3>
+        <button class="modal-close-btn" id="closeHistoryModalBtn">✕</button>
+      </div>
+      <div class="modal-body" id="historyListContent">
+        <p class="modal-empty-msg">기록을 불러오는 중...</p>
+      </div>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>

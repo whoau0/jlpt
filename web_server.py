@@ -29,6 +29,7 @@ from config import (
 from level_manager import LevelManager, LEVELS
 from reporter import SessionReporter
 from feedback_generator import generate_post_call_feedback
+from db import get_past_conversations
 
 app = FastAPI(title="키라키라 (Kirakira) Web Call")
 
@@ -61,6 +62,12 @@ async def set_user_level(req: SetLevelRequest):
         mgr.set_current_level(req.level)
         return mgr.get_level_info()
     return {"error": "Invalid level"}
+
+
+@app.get("/api/history")
+async def get_history():
+    """Returns past call history and review reports from Supabase."""
+    return get_past_conversations()
 
 
 @app.post("/api/open-logs")
