@@ -35,25 +35,15 @@ const historyModal = document.getElementById("historyModal");
 const closeHistoryModalBtn = document.getElementById("closeHistoryModalBtn");
 const historyListContent = document.getElementById("historyListContent");
 
-// Downsample audio buffer from device hardware sample rate to 16000Hz for Gemini Live
+// Fast and accurate downsampler to 16000Hz for Gemini Live input
 function downsampleTo16k(inputData, inputSampleRate) {
-  if (inputSampleRate === 16000) return inputData;
+  if (!inputSampleRate || inputSampleRate === 16000) return inputData;
   const ratio = inputSampleRate / 16000;
   const newLength = Math.round(inputData.length / ratio);
   const result = new Float32Array(newLength);
-  let offsetResult = 0;
-  let offsetInput = 0;
-  while (offsetResult < result.length) {
-    const nextOffsetInput = Math.round((offsetResult + 1) * ratio);
-    let accum = 0;
-    let count = 0;
-    for (let i = offsetInput; i < nextOffsetInput && i < inputData.length; i++) {
-      accum += inputData[i];
-      count++;
-    }
-    result[offsetResult] = count > 0 ? accum / count : inputData[offsetInput];
-    offsetResult++;
-    offsetInput = nextOffsetInput;
+  for (let i = 0; i < newLength; i++) {
+    const srcIndex = Math.min(Math.round(i * ratio), inputData.length - 1);
+    result[i] = inputData[srcIndex];
   }
   return result;
 }
@@ -103,18 +93,18 @@ loadProfile();
 startCallBtn.addEventListener("click", async () => {
   try {
     startCallBtn.disabled = true;
-    callStatusText.textContent = "마이크 연결 중...";
+    callStatusText.textContent = "연결 준비 중...";
 
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
-    // Initialize Web Audio API for Playback (handles 24kHz Gemini output on mobile & desktop)
+    // A. Playback AudioContext (outputs 24kHz Gemini speech)
     playbackAudioContext = new AudioCtx();
     if (playbackAudioContext.state === "suspended") {
       await playbackAudioContext.resume();
     }
     nextPlaybackTime = playbackAudioContext.currentTime;
 
-    // Request Microphone access with echo cancellation & noise suppression
+    // B. Request Microphone with mobile-optimized constraints
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -124,7 +114,7 @@ startCallBtn.addEventListener("click", async () => {
       }
     });
 
-    // Initialize AudioContext for Microphone at hardware native sample rate
+    // C. Capture AudioContext at native hardware rate
     audioContext = new AudioCtx();
     if (audioContext.state === "suspended") {
       await audioContext.resume();
@@ -132,7 +122,7 @@ startCallBtn.addEventListener("click", async () => {
     const source = audioContext.createMediaStreamSource(micStream);
     scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
 
-    // Connect WebSocket
+    // D. Connect WebSocket
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws/call`;
     ws = new WebSocket(wsUrl);
@@ -141,31 +131,32 @@ startCallBtn.addEventListener("click", async () => {
     ws.onopen = () => {
       isCallActive = true;
       callStartTime = Date.now();
-      callStatusText.textContent = "통화 중";
+      callStatusText.textContent = "통화 중 (키라키라 연결됨)";
       liveDot.classList.add("active");
       sosBtn.disabled = false;
       startCallBtn.style.display = "none";
       endCallBtn.style.display = "flex";
       startCallBtn.disabled = false;
+      aiText.textContent = "키라키라와 연결되었습니다! 곧 먼저 인사를 건넵니다...";
 
       // Start 8-minute Timer
       startTimer();
 
-      // Hook Microphone stream to WebSocket via mute gain node to prevent speaker feedback loop
-      const muteGain = audioContext.createGain();
-      muteGain.gain.value = 0;
+      // Connect scriptProcessor to destination to ensure audio loop stays active,
+      // but fill outputBuffer with 0 to prevent mic echo to speaker!
       source.connect(scriptProcessor);
-      scriptProcessor.connect(muteGain);
-      muteGain.connect(audioContext.destination);
+      scriptProcessor.connect(audioContext.destination);
 
       scriptProcessor.onaudioprocess = (e) => {
+        // Always silence output buffer to guarantee no acoustic echo to phone speakers
+        const outData = e.outputBuffer.getChannelData(0);
+        outData.fill(0);
+
         if (!isCallActive || !ws || ws.readyState !== WebSocket.OPEN) return;
         const rawInput = e.inputBuffer.getChannelData(0);
 
-        // Always downsample to exactly 16000Hz PCM for Gemini Live
+        // Downsample to 16000Hz PCM
         const downsampled = downsampleTo16k(rawInput, audioContext.sampleRate);
-        
-        // Convert Float32 to 16-bit PCM Little-Endian
         const pcmData = new Int16Array(downsampled.length);
         for (let i = 0; i < downsampled.length; i++) {
           const s = Math.max(-1, Math.min(1, downsampled[i]));
@@ -175,18 +166,26 @@ startCallBtn.addEventListener("click", async () => {
       };
     };
 
-    ws.onmessage = (event) => {
-      // 1. Binary Audio Chunk from Gemini (24kHz PCM)
+    // Support both ArrayBuffer and Blob binary frames (crucial for iOS Safari / Mobile Chrome)
+    ws.onmessage = async (event) => {
+      let arrayBuffer = null;
       if (event.data instanceof ArrayBuffer) {
-        playIncomingAudio(event.data);
-      } else {
-        // 2. JSON Event
-        try {
-          const data = JSON.parse(event.data);
-          handleServerEvent(data);
-        } catch (e) {
-          console.error("JSON parse error", e);
-        }
+        arrayBuffer = event.data;
+      } else if (event.data instanceof Blob) {
+        arrayBuffer = await event.data.arrayBuffer();
+      }
+
+      if (arrayBuffer) {
+        playIncomingAudio(arrayBuffer);
+        return;
+      }
+
+      // JSON Control/Transcript event
+      try {
+        const data = JSON.parse(event.data);
+        handleServerEvent(data);
+      } catch (e) {
+        console.error("JSON parse error:", e);
       }
     };
 
@@ -204,9 +203,9 @@ startCallBtn.addEventListener("click", async () => {
     console.error("Microphone access error:", err);
     let tip = "마이크 접근 중 문제가 발생했습니다.";
     if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-      tip = "🎤 마이크 권한이 차단되어 있습니다!\n\n[해결 방법]\n• PC: 주소창 왼쪽의 자물쇠(🔒) 또는 설정 아이콘을 누르고 [마이크]를 '허용'으로 변경해 주세요.\n• 모바일: 브라우저 상단/설정에서 마이크 접근을 '허용'해 주세요.\n(⚠️ 모바일에서는 반드시 https:// 로 시작하는 주소로 접속해야 마이크가 허용됩니다)";
+      tip = "🎤 마이크 권한이 차단되어 있습니다!\n\n[해결 방법]\n• 모바일/PC 브라우저 주소창 왼쪽의 자물쇠(🔒) 또는 설정 아이콘을 누르고 [마이크]를 '허용'으로 변경해 주세요.";
     } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-      tip = "연결된 마이크가 없습니다. 이어폰이나 마이크를 확인한 후 다시 시도해 주세요.";
+      tip = "연결된 마이크를 찾을 수 없습니다.";
     } else {
       tip = "마이크 오류: " + err.message;
     }
@@ -220,13 +219,19 @@ startCallBtn.addEventListener("click", async () => {
 function playIncomingAudio(arrayBuffer) {
   if (!playbackAudioContext || !isCallActive) return;
 
+  if (playbackAudioContext.state === "suspended") {
+    playbackAudioContext.resume();
+  }
+
   const int16Array = new Int16Array(arrayBuffer);
+  if (int16Array.length === 0) return;
+
   const float32Array = new Float32Array(int16Array.length);
   for (let i = 0; i < int16Array.length; i++) {
     float32Array[i] = int16Array[i] / 32768.0;
   }
 
-  // Web Audio automatically resamples 24000Hz buffer to hardware rate (e.g. 44.1k/48k)
+  // Web Audio automatically resamples 24000Hz buffer to hardware rate (44.1k/48k)
   const audioBuffer = playbackAudioContext.createBuffer(1, float32Array.length, 24000);
   audioBuffer.getChannelData(0).set(float32Array);
 
@@ -235,7 +240,7 @@ function playIncomingAudio(arrayBuffer) {
   bufferSource.connect(playbackAudioContext.destination);
 
   const now = playbackAudioContext.currentTime;
-  if (nextPlaybackTime < now) {
+  if (nextPlaybackTime < now || nextPlaybackTime > now + 1.2) {
     nextPlaybackTime = now;
   }
   bufferSource.start(nextPlaybackTime);
@@ -252,10 +257,10 @@ function playIncomingAudio(arrayBuffer) {
 
 // 3. Handle Server JSON Events
 function handleServerEvent(data) {
-  if (data.type === "ai_transcript") {
+  if (data.type === "ai_transcript" || data.type === "ai_chunk_text") {
     aiText.textContent = data.text;
     subtitlesBox.scrollTop = subtitlesBox.scrollHeight;
-  } else if (data.type === "user_transcript") {
+  } else if (data.type === "user_transcript" || data.type === "user_chunk_text") {
     userSubtitle.style.display = "flex";
     userText.textContent = data.text;
     subtitlesBox.scrollTop = subtitlesBox.scrollHeight;

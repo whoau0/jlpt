@@ -157,7 +157,7 @@ async def websocket_call_endpoint(websocket: WebSocket):
                             text=(
                                 f"（通話が繋がりました。目標レベルはJLPT {curr_level}です。"
                                 "親しい友達から電話がかかってきた時のように「もしもし〜！元気だった？今日何してたの？」と"
-                                "明るく挨拶して質問を1つだけ投げかけ、相手の返事を待ってください。"
+                                "明るく挨拶して短い質問を1つだけ投げかけ、相手の返事を待ってください。"
                                 "絶対に自分から電話を切るような挨拶はしないでください。）"
                             )
                         )
@@ -218,7 +218,6 @@ async def websocket_call_endpoint(websocket: WebSocket):
                         break
                     except Exception as e:
                         if call_active:
-                            # Do not abort session on transient streaming glitches
                             await asyncio.sleep(0.01)
 
             # 3. Stream Gemini to Browser
@@ -236,19 +235,35 @@ async def websocket_call_endpoint(websocket: WebSocket):
                         if sc is not None:
                             # Interruption (User spoke while AI was speaking)
                             if sc.interrupted:
-                                await websocket.send_text(json.dumps({"type": "interrupted"}))
+                                try:
+                                    await websocket.send_text(json.dumps({"type": "interrupted"}))
+                                except Exception:
+                                    pass
 
                             # User speech transcription
                             if sc.input_transcription and sc.input_transcription.text:
                                 current_user_text += sc.input_transcription.text
+                                try:
+                                    await websocket.send_text(
+                                        json.dumps({
+                                            "type": "user_chunk_text",
+                                            "text": current_user_text
+                                        })
+                                    )
+                                except Exception:
+                                    pass
+
                                 if sc.input_transcription.finished:
                                     speech = current_user_text.strip()
                                     if speech:
                                         elapsed = int(time.time() - start_time)
                                         reporter.add_transcript("나(학습자)", speech, elapsed)
-                                        await websocket.send_text(
-                                            json.dumps({"type": "user_transcript", "text": speech})
-                                        )
+                                        try:
+                                            await websocket.send_text(
+                                                json.dumps({"type": "user_transcript", "text": speech})
+                                            )
+                                        except Exception:
+                                            pass
 
                                         # Only detect verbal end after user has actually spoken in conversation
                                         if elapsed >= 20 and any(k in speech for k in END_CALL_KEYWORDS):
@@ -280,6 +295,15 @@ async def websocket_call_endpoint(websocket: WebSocket):
                             # AI speech transcription
                             if sc.output_transcription and sc.output_transcription.text:
                                 current_ai_text += sc.output_transcription.text
+                                try:
+                                    await websocket.send_text(
+                                        json.dumps({
+                                            "type": "ai_chunk_text",
+                                            "text": current_ai_text
+                                        })
+                                    )
+                                except Exception:
+                                    pass
 
                             # Turn Complete
                             if sc.turn_complete:
@@ -287,16 +311,22 @@ async def websocket_call_endpoint(websocket: WebSocket):
                                 if ai_speech:
                                     elapsed = int(time.time() - start_time)
                                     reporter.add_transcript("키라키라", ai_speech, elapsed)
-                                    await websocket.send_text(
-                                        json.dumps({"type": "ai_transcript", "text": ai_speech})
-                                    )
+                                    try:
+                                        await websocket.send_text(
+                                            json.dumps({"type": "ai_transcript", "text": ai_speech})
+                                        )
+                                    except Exception:
+                                        pass
                                     current_ai_text = ""
 
                                     # ONLY end call if user previously expressed desire to end
                                     if waiting_for_farewell:
                                         print("🌟 키라키라가 작별 인사를 완료하여 통화를 정상 종료합니다.")
                                         await asyncio.sleep(2.5)  # Allow audio playback to complete
-                                        await websocket.send_text(json.dumps({"type": "call_ended"}))
+                                        try:
+                                            await websocket.send_text(json.dumps({"type": "call_ended"}))
+                                        except Exception:
+                                            pass
                                         call_active = False
                                         break
 
