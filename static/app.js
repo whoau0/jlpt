@@ -2,11 +2,11 @@ let ws = null;
 let audioContext = null;
 let micStream = null;
 let scriptProcessor = null;
-let playbackAudioContext = null;
 let nextPlaybackTime = 0;
 let callStartTime = null;
 let timerInterval = null;
 let isCallActive = false;
+let isAiSpeaking = false;
 
 // UI Elements
 const liveDot = document.getElementById("liveDot");
@@ -35,7 +35,7 @@ const historyModal = document.getElementById("historyModal");
 const closeHistoryModalBtn = document.getElementById("closeHistoryModalBtn");
 const historyListContent = document.getElementById("historyListContent");
 
-// Fast and accurate downsampler to 16000Hz for Gemini Live input
+// Downsample raw mic float32 buffer to 16000Hz PCM
 function downsampleTo16k(inputData, inputSampleRate) {
   if (!inputSampleRate || inputSampleRate === 16000) return inputData;
   const ratio = inputSampleRate / 16000;
@@ -89,22 +89,22 @@ levelSelect.addEventListener("change", async (e) => {
 
 loadProfile();
 
-// 1. Start Call (Mobile & Desktop Compatible)
+// 1. Start Call (Unified AudioContext for Mobile Full-Duplex Compatibility)
 startCallBtn.addEventListener("click", async () => {
   try {
     startCallBtn.disabled = true;
-    callStatusText.textContent = "연결 준비 중...";
+    callStatusText.textContent = "마이크 연결 중...";
 
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
 
-    // A. Playback AudioContext (outputs 24kHz Gemini speech)
-    playbackAudioContext = new AudioCtx();
-    if (playbackAudioContext.state === "suspended") {
-      await playbackAudioContext.resume();
+    // SINGLE Unified AudioContext (crucial for iOS Safari / Mobile WebKit)
+    audioContext = new AudioCtx();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
     }
-    nextPlaybackTime = playbackAudioContext.currentTime;
+    nextPlaybackTime = audioContext.currentTime;
 
-    // B. Request Microphone with mobile-optimized constraints
+    // Request Microphone access with echo cancellation & noise suppression
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -114,15 +114,15 @@ startCallBtn.addEventListener("click", async () => {
       }
     });
 
-    // C. Capture AudioContext at native hardware rate
-    audioContext = new AudioCtx();
+    // Ensure audioContext is active after mic permission granted
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
+
     const source = audioContext.createMediaStreamSource(micStream);
     scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
 
-    // D. Connect WebSocket
+    // Connect WebSocket
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws/call`;
     ws = new WebSocket(wsUrl);
@@ -131,29 +131,39 @@ startCallBtn.addEventListener("click", async () => {
     ws.onopen = () => {
       isCallActive = true;
       callStartTime = Date.now();
-      callStatusText.textContent = "통화 중 (키라키라 연결됨)";
+      callStatusText.textContent = "👂 연결됨 (듣는 중)";
       liveDot.classList.add("active");
       sosBtn.disabled = false;
       startCallBtn.style.display = "none";
       endCallBtn.style.display = "flex";
       startCallBtn.disabled = false;
-      aiText.textContent = "키라키라와 연결되었습니다! 곧 먼저 인사를 건넵니다...";
+      aiText.textContent = "키라키라와 연결되었습니다! 잠시 후 인사를 건넵니다...";
 
       // Start 8-minute Timer
       startTimer();
 
-      // Connect scriptProcessor to destination to ensure audio loop stays active,
-      // but fill outputBuffer with 0 to prevent mic echo to speaker!
+      // Hook up microphone processor to destination, but silence output to prevent speaker loop
       source.connect(scriptProcessor);
       scriptProcessor.connect(audioContext.destination);
 
       scriptProcessor.onaudioprocess = (e) => {
-        // Always silence output buffer to guarantee no acoustic echo to phone speakers
-        const outData = e.outputBuffer.getChannelData(0);
-        outData.fill(0);
+        // Zero out output buffer so mic does not play out of phone speakers
+        e.outputBuffer.getChannelData(0).fill(0);
 
         if (!isCallActive || !ws || ws.readyState !== WebSocket.OPEN) return;
         const rawInput = e.inputBuffer.getChannelData(0);
+
+        // Detect speaking volume for live visual feedback
+        let sum = 0;
+        for (let i = 0; i < rawInput.length; i++) {
+          sum += rawInput[i] * rawInput[i];
+        }
+        const rms = Math.sqrt(sum / rawInput.length);
+        if (rms > 0.02) {
+          if (!isAiSpeaking) callStatusText.textContent = "🎙️ 내 목소리 감지됨";
+        } else if (!isAiSpeaking) {
+          callStatusText.textContent = "👂 듣는 중...";
+        }
 
         // Downsample to 16000Hz PCM
         const downsampled = downsampleTo16k(rawInput, audioContext.sampleRate);
@@ -203,7 +213,7 @@ startCallBtn.addEventListener("click", async () => {
     console.error("Microphone access error:", err);
     let tip = "마이크 접근 중 문제가 발생했습니다.";
     if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-      tip = "🎤 마이크 권한이 차단되어 있습니다!\n\n[해결 방법]\n• 모바일/PC 브라우저 주소창 왼쪽의 자물쇠(🔒) 또는 설정 아이콘을 누르고 [마이크]를 '허용'으로 변경해 주세요.";
+      tip = "🎤 마이크 권한이 차단되어 있습니다!\n\n[해결 방법]\n• 브라우저 주소창 왼쪽의 자물쇠(🔒) 또는 설정 아이콘을 누르고 [마이크]를 '허용'으로 변경해 주세요.";
     } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
       tip = "연결된 마이크를 찾을 수 없습니다.";
     } else {
@@ -215,12 +225,12 @@ startCallBtn.addEventListener("click", async () => {
   }
 });
 
-// 2. Play Incoming 24kHz PCM Audio
+// 2. Play Incoming 24kHz PCM Audio using Unified AudioContext
 function playIncomingAudio(arrayBuffer) {
-  if (!playbackAudioContext || !isCallActive) return;
+  if (!audioContext || !isCallActive) return;
 
-  if (playbackAudioContext.state === "suspended") {
-    playbackAudioContext.resume();
+  if (audioContext.state === "suspended") {
+    audioContext.resume();
   }
 
   const int16Array = new Int16Array(arrayBuffer);
@@ -232,25 +242,29 @@ function playIncomingAudio(arrayBuffer) {
   }
 
   // Web Audio automatically resamples 24000Hz buffer to hardware rate (44.1k/48k)
-  const audioBuffer = playbackAudioContext.createBuffer(1, float32Array.length, 24000);
+  const audioBuffer = audioContext.createBuffer(1, float32Array.length, 24000);
   audioBuffer.getChannelData(0).set(float32Array);
 
-  const bufferSource = playbackAudioContext.createBufferSource();
+  const bufferSource = audioContext.createBufferSource();
   bufferSource.buffer = audioBuffer;
-  bufferSource.connect(playbackAudioContext.destination);
+  bufferSource.connect(audioContext.destination);
 
-  const now = playbackAudioContext.currentTime;
-  if (nextPlaybackTime < now || nextPlaybackTime > now + 1.2) {
+  const now = audioContext.currentTime;
+  if (nextPlaybackTime < now) {
     nextPlaybackTime = now;
   }
   bufferSource.start(nextPlaybackTime);
   nextPlaybackTime += audioBuffer.duration;
 
-  // Pulse animation while playing
+  // Pulse animation & state while playing
+  isAiSpeaking = true;
   setSpeakingState(true);
+  callStatusText.textContent = "🌟 키라키라 말하는 중...";
   bufferSource.onended = () => {
-    if (playbackAudioContext && playbackAudioContext.currentTime >= nextPlaybackTime - 0.1) {
+    if (audioContext && audioContext.currentTime >= nextPlaybackTime - 0.1) {
+      isAiSpeaking = false;
       setSpeakingState(false);
+      callStatusText.textContent = "👂 듣는 중...";
     }
   };
 }
@@ -265,8 +279,10 @@ function handleServerEvent(data) {
     userText.textContent = data.text;
     subtitlesBox.scrollTop = subtitlesBox.scrollHeight;
   } else if (data.type === "interrupted") {
-    nextPlaybackTime = playbackAudioContext ? playbackAudioContext.currentTime : 0;
+    nextPlaybackTime = audioContext ? audioContext.currentTime : 0;
+    isAiSpeaking = false;
     setSpeakingState(false);
+    callStatusText.textContent = "👂 듣는 중...";
   } else if (data.type === "stage_update") {
     updateStageUI(data.stage, data.title, data.level);
   } else if (data.type === "call_ended") {
@@ -347,6 +363,7 @@ function endCall() {
 function endCallCleanup() {
   if (!isCallActive && feedbackArea.style.display === "flex") return;
   isCallActive = false;
+  isAiSpeaking = false;
   if (timerInterval) clearInterval(timerInterval);
   liveDot.classList.remove("active");
   callStatusText.textContent = "통화 종료됨";
@@ -367,9 +384,6 @@ function endCallCleanup() {
   if (audioContext && audioContext.state !== "closed") {
     audioContext.close();
   }
-  if (playbackAudioContext && playbackAudioContext.state !== "closed") {
-    playbackAudioContext.close();
-  }
 
   // Switch to Feedback Area view with loading placeholder
   callingArea.style.display = "none";
@@ -383,7 +397,6 @@ function showFeedbackReport(markdown) {
     feedbackContent.innerHTML = "<p>대화 내용이 짧아 리포트가 생성되지 않았습니다. 다시 대화해보세요!</p>";
     return;
   }
-  // Simple markdown to HTML parser for headers, lists, and bold text
   let html = markdown
     .replace(/^# (.*$)/gim, '<h1>$1</h1>')
     .replace(/^## (.*$)/gim, '<h2>$1</h2>')

@@ -174,21 +174,13 @@ async def websocket_call_endpoint(websocket: WebSocket):
                         message = await websocket.receive()
                         if "bytes" in message and message["bytes"]:
                             chunk = message["bytes"]
-                            # Stream PCM chunk to Gemini Live API
-                            try:
-                                await session.send_realtime_input(
-                                    audio=types.Blob(
-                                        data=chunk,
-                                        mime_type="audio/pcm;rate=16000",
-                                    )
+                            # Stream PCM chunk to Gemini Live API (Google AI Studio protocol requires mediaChunks via media=)
+                            await session.send_realtime_input(
+                                media=types.Blob(
+                                    data=chunk,
+                                    mime_type="audio/pcm;rate=16000",
                                 )
-                            except TypeError:
-                                await session.send_realtime_input(
-                                    media=types.Blob(
-                                        data=chunk,
-                                        mime_type="audio/pcm;rate=16000",
-                                    )
-                                )
+                            )
                         elif "text" in message and message["text"]:
                             data = json.loads(message["text"])
                             msg_type = data.get("type")
@@ -378,7 +370,11 @@ async def websocket_call_endpoint(websocket: WebSocket):
                 if not call_active:
                     break
 
-                # If any task terminated with an unhandled exception, stop session
+                # If any key stream ended or crashed, stop session
+                if t_browser.done() or t_gemini.done():
+                    print("📡 브라우저 또는 Gemini 스트림 세션이 종료되었습니다.")
+                    break
+
                 fatal_error = False
                 for task in done:
                     if task.done() and not task.cancelled():
