@@ -35,6 +35,29 @@ const historyModal = document.getElementById("historyModal");
 const closeHistoryModalBtn = document.getElementById("closeHistoryModalBtn");
 const historyListContent = document.getElementById("historyListContent");
 
+// Downsample audio buffer from device hardware sample rate to 16000Hz for Gemini Live
+function downsampleTo16k(inputData, inputSampleRate) {
+  if (inputSampleRate === 16000) return inputData;
+  const ratio = inputSampleRate / 16000;
+  const newLength = Math.round(inputData.length / ratio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetInput = 0;
+  while (offsetResult < result.length) {
+    const nextOffsetInput = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetInput; i < nextOffsetInput && i < inputData.length; i++) {
+      accum += inputData[i];
+      count++;
+    }
+    result[offsetResult] = count > 0 ? accum / count : inputData[offsetInput];
+    offsetResult++;
+    offsetInput = nextOffsetInput;
+  }
+  return result;
+}
+
 // Load Profile on startup
 async function loadProfile() {
   try {
@@ -76,17 +99,22 @@ levelSelect.addEventListener("change", async (e) => {
 
 loadProfile();
 
-// 1. Start Call
+// 1. Start Call (Mobile & Desktop Compatible)
 startCallBtn.addEventListener("click", async () => {
   try {
     startCallBtn.disabled = true;
     callStatusText.textContent = "마이크 연결 중...";
 
-    // Initialize Web Audio API for Playback (24kHz for Gemini Live)
-    playbackAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+
+    // Initialize Web Audio API for Playback (handles 24kHz Gemini output on mobile & desktop)
+    playbackAudioContext = new AudioCtx();
+    if (playbackAudioContext.state === "suspended") {
+      await playbackAudioContext.resume();
+    }
     nextPlaybackTime = playbackAudioContext.currentTime;
 
-    // Request Microphone access
+    // Request Microphone access with echo cancellation & noise suppression
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -96,8 +124,11 @@ startCallBtn.addEventListener("click", async () => {
       }
     });
 
-    // Initialize AudioContext for Microphone (16kHz for Gemini input)
-    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    // Initialize AudioContext for Microphone at hardware native sample rate
+    audioContext = new AudioCtx();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
     const source = audioContext.createMediaStreamSource(micStream);
     scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
 
@@ -120,7 +151,7 @@ startCallBtn.addEventListener("click", async () => {
       // Start 8-minute Timer
       startTimer();
 
-      // Hook Microphone stream to WebSocket via mute gain node to avoid acoustic feedback to speaker
+      // Hook Microphone stream to WebSocket via mute gain node to prevent speaker feedback loop
       const muteGain = audioContext.createGain();
       muteGain.gain.value = 0;
       source.connect(scriptProcessor);
@@ -129,12 +160,15 @@ startCallBtn.addEventListener("click", async () => {
 
       scriptProcessor.onaudioprocess = (e) => {
         if (!isCallActive || !ws || ws.readyState !== WebSocket.OPEN) return;
-        const inputData = e.inputBuffer.getChannelData(0);
+        const rawInput = e.inputBuffer.getChannelData(0);
+
+        // Always downsample to exactly 16000Hz PCM for Gemini Live
+        const downsampled = downsampleTo16k(rawInput, audioContext.sampleRate);
         
         // Convert Float32 to 16-bit PCM Little-Endian
-        const pcmData = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          const s = Math.max(-1, Math.min(1, inputData[i]));
+        const pcmData = new Int16Array(downsampled.length);
+        for (let i = 0; i < downsampled.length; i++) {
+          const s = Math.max(-1, Math.min(1, downsampled[i]));
           pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
         ws.send(pcmData.buffer);
@@ -170,9 +204,9 @@ startCallBtn.addEventListener("click", async () => {
     console.error("Microphone access error:", err);
     let tip = "마이크 접근 중 문제가 발생했습니다.";
     if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-      tip = "🎤 마이크 권한이 차단되어 있습니다!\n\n[해결 방법]\n• PC: 주소창 왼쪽의 자물쇠(🔒) 또는 설정 아이콘을 누르고 [마이크]를 '허용'으로 변경해 주세요.\n• 모바일: 브라우저 상단/설정에서 마이크 접근을 '허용'해 주세요.\n(⚠️ 모바일에서는 반드시 https:// 로 시작하는 Render 주소로 접속해야 마이크가 허용됩니다)";
+      tip = "🎤 마이크 권한이 차단되어 있습니다!\n\n[해결 방법]\n• PC: 주소창 왼쪽의 자물쇠(🔒) 또는 설정 아이콘을 누르고 [마이크]를 '허용'으로 변경해 주세요.\n• 모바일: 브라우저 상단/설정에서 마이크 접근을 '허용'해 주세요.\n(⚠️ 모바일에서는 반드시 https:// 로 시작하는 주소로 접속해야 마이크가 허용됩니다)";
     } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-      tip = "연결된 마이크가 없습니다. 이어폰이나 마이크를 연결한 후 다시 시도해 주세요.";
+      tip = "연결된 마이크가 없습니다. 이어폰이나 마이크를 확인한 후 다시 시도해 주세요.";
     } else {
       tip = "마이크 오류: " + err.message;
     }
@@ -192,6 +226,7 @@ function playIncomingAudio(arrayBuffer) {
     float32Array[i] = int16Array[i] / 32768.0;
   }
 
+  // Web Audio automatically resamples 24000Hz buffer to hardware rate (e.g. 44.1k/48k)
   const audioBuffer = playbackAudioContext.createBuffer(1, float32Array.length, 24000);
   audioBuffer.getChannelData(0).set(float32Array);
 

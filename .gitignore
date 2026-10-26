@@ -12,3 +12,5 @@ venv/
 logs/*.txt
 logs/*.json
 logs/*.md
+
+push_to_github.bat
