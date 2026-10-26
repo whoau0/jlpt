@@ -120,9 +120,12 @@ startCallBtn.addEventListener("click", async () => {
       // Start 8-minute Timer
       startTimer();
 
-      // Hook Microphone stream to WebSocket
+      // Hook Microphone stream to WebSocket via mute gain node to avoid acoustic feedback to speaker
+      const muteGain = audioContext.createGain();
+      muteGain.gain.value = 0;
       source.connect(scriptProcessor);
-      scriptProcessor.connect(audioContext.destination);
+      scriptProcessor.connect(muteGain);
+      muteGain.connect(audioContext.destination);
 
       scriptProcessor.onaudioprocess = (e) => {
         if (!isCallActive || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -226,6 +229,8 @@ function handleServerEvent(data) {
     setSpeakingState(false);
   } else if (data.type === "stage_update") {
     updateStageUI(data.stage, data.title, data.level);
+  } else if (data.type === "call_ended") {
+    endCallCleanup();
   } else if (data.type === "feedback_report") {
     showFeedbackReport(data.markdown);
     if (data.level_result) {
@@ -267,7 +272,7 @@ function updateStageUI(stageNum, stageTitle, levelDesc) {
 function startTimer() {
   if (timerInterval) clearInterval(timerInterval);
   timerInterval = setInterval(() => {
-    if (!callStartTime) return;
+    if (!callStartTime || !isCallActive) return;
     const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
     const m = String(Math.floor(elapsed / 60)).padStart(2, "0");
     const s = String(elapsed % 60).padStart(2, "0");
@@ -300,6 +305,7 @@ function endCall() {
 }
 
 function endCallCleanup() {
+  if (!isCallActive && feedbackArea.style.display === "flex") return;
   isCallActive = false;
   if (timerInterval) clearInterval(timerInterval);
   liveDot.classList.remove("active");
@@ -325,9 +331,10 @@ function endCallCleanup() {
     playbackAudioContext.close();
   }
 
-  // Switch to Feedback Area view
+  // Switch to Feedback Area view with loading placeholder
   callingArea.style.display = "none";
   feedbackArea.style.display = "flex";
+  feedbackContent.innerHTML = "<div style='text-align:center; padding: 40px 20px; color:#555;'>🌸 <strong>통화가 종료되었습니다.</strong><br><br>키라키라가 오늘의 대화 내용과 발화를 분석하여<br>JLPT 복습 리포트를 작성 중입니다. 잠시만 기다려주세요! ✨</div>";
 }
 
 // 8. Render Markdown Feedback

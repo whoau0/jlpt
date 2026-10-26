@@ -93,6 +93,14 @@ def get_stage_info(elapsed_seconds: int) -> tuple[int, str, str]:
         return 5, "가정 상황", "가정법 시뮬레이션"
 
 
+# Keywords indicating user wishes to end call verbally
+END_CALL_KEYWORDS = [
+    "그만하자", "그만할래", "그만할게", "그만할", "통화 종료", "전화 끊",
+    "끊을게", "끊자", "이제 갈게", "또 봐", "バイバイ", "ばいばい",
+    "切るね", "じゃあね", "またね", "おしまい", "今日はここまで"
+]
+
+
 @app.websocket("/ws/call")
 async def websocket_call_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -139,20 +147,25 @@ async def websocket_call_endpoint(websocket: WebSocket):
 
     try:
         async with client.aio.live.connect(model=GEMINI_LIVE_MODEL, config=config) as session:
-            # Send initial greeting
+            # Send initial friendly greeting and first open question
             await session.send_client_content(
                 turns=types.Content(
                     role="user",
                     parts=[
                         types.Part.from_text(
-                            text=f"（通話が繋がりました。目標レベルはJLPT {curr_level}です。明るく元気な日本語で、久しぶりに友達から電話がかかってきたような親しい挨拶をしてください！）"
+                            text=(
+                                f"（通話が繋がりました。目標レベルはJLPT {curr_level}です。"
+                                "親しい友達から電話がかかってきた時のように「もしもし〜！元気だった？今日何してたの？」と"
+                                "明るく挨拶して質問を1つだけ投げかけ、相手の返事を待ってください。"
+                                "絶対に自分から電話を切るような挨拶はしないでください。）"
+                            )
                         )
                     ],
                 ),
                 turn_complete=True,
             )
 
-            # 2. Receive from Browser
+            # 2. Receive Audio and Text from Browser
             async def receive_from_browser():
                 nonlocal call_active
                 while call_active:
@@ -160,12 +173,21 @@ async def websocket_call_endpoint(websocket: WebSocket):
                         message = await websocket.receive()
                         if "bytes" in message and message["bytes"]:
                             chunk = message["bytes"]
-                            await session.send_realtime_input(
-                                media=types.Blob(
-                                    data=chunk,
-                                    mime_type="audio/pcm;rate=16000",
+                            # Stream PCM chunk to Gemini Live API
+                            try:
+                                await session.send_realtime_input(
+                                    audio=types.Blob(
+                                        data=chunk,
+                                        mime_type="audio/pcm;rate=16000",
+                                    )
                                 )
-                            )
+                            except TypeError:
+                                await session.send_realtime_input(
+                                    media=types.Blob(
+                                        data=chunk,
+                                        mime_type="audio/pcm;rate=16000",
+                                    )
+                                )
                         elif "text" in message and message["text"]:
                             data = json.loads(message["text"])
                             msg_type = data.get("type")
@@ -175,21 +197,28 @@ async def websocket_call_endpoint(websocket: WebSocket):
                                         role="user",
                                         parts=[
                                             types.Part.from_text(
-                                                text=f"（ユーザーが「どういう意味？」と困っています。直前の日本語の質問や内容の意味を、優しくわかりやすい韓国語で解説し、JLPT {curr_level}レベルの短い日本語の答え方の例を教えてあげてください！）"
+                                                text=(
+                                                    f"（ユーザーが「どういう意味？」と困っています。"
+                                                    f"直前の日本語の質問や内容の意味を、優しくわかりやすい韓国語で解説し、"
+                                                    f"JLPT {curr_level}レベルの短い日本語の答え方の例を教えてあげてください！）"
+                                                )
                                             )
                                         ],
                                     ),
                                     turn_complete=True,
                                 )
                             elif msg_type == "end":
+                                print("📱 사용자가 통화 종료 버튼을 클릭했습니다.")
                                 call_active = False
                                 break
                     except WebSocketDisconnect:
+                        print("브라우저 웹소켓 연결이 해제되었습니다.")
                         call_active = False
                         break
                     except Exception as e:
-                        print(f"[브라우저 수신 오류] {e}")
-                        break
+                        if call_active:
+                            # Do not abort session on transient streaming glitches
+                            await asyncio.sleep(0.01)
 
             # 3. Stream Gemini to Browser
             async def forward_gemini_to_browser():
@@ -199,9 +228,12 @@ async def websocket_call_endpoint(websocket: WebSocket):
 
                 try:
                     async for response in session.receive():
+                        if not call_active:
+                            break
+
                         sc = response.server_content
                         if sc is not None:
-                            # Interruption
+                            # Interruption (User spoke while AI was speaking)
                             if sc.interrupted:
                                 await websocket.send_text(json.dumps({"type": "interrupted"}))
 
@@ -216,9 +248,28 @@ async def websocket_call_endpoint(websocket: WebSocket):
                                         await websocket.send_text(
                                             json.dumps({"type": "user_transcript", "text": speech})
                                         )
+
+                                        # Check if user verbally wants to end call
+                                        if any(k in speech for k in END_CALL_KEYWORDS):
+                                            print(f"👋 사용자 통화 종료 발화 감지: '{speech}'")
+                                            await session.send_client_content(
+                                                turns=types.Content(
+                                                    role="user",
+                                                    parts=[
+                                                        types.Part.from_text(
+                                                            text=(
+                                                                "（ユーザーが通話を終えたいと言いました。"
+                                                                "今日のお礼と明るく温かいお別れの挨拶をして、文末に必ず [CALL_END] を付けてください。）"
+                                                            )
+                                                        )
+                                                    ],
+                                                ),
+                                                turn_complete=True,
+                                            )
+
                                     current_user_text = ""
 
-                            # Audio Chunk
+                            # Audio Chunk to Browser
                             if sc.model_turn is not None:
                                 for part in sc.model_turn.parts:
                                     if part.inline_data:
@@ -233,18 +284,32 @@ async def websocket_call_endpoint(websocket: WebSocket):
                                 ai_speech = current_ai_text.strip()
                                 if ai_speech:
                                     elapsed = int(time.time() - start_time)
+
+                                    # Check if AI finished farewell with [CALL_END]
+                                    call_ended_by_ai = False
+                                    if "[CALL_END]" in ai_speech:
+                                        ai_speech = ai_speech.replace("[CALL_END]", "").strip()
+                                        call_ended_by_ai = True
+
                                     reporter.add_transcript("키라키라", ai_speech, elapsed)
                                     await websocket.send_text(
                                         json.dumps({"type": "ai_transcript", "text": ai_speech})
                                     )
                                     current_ai_text = ""
 
+                                    if call_ended_by_ai:
+                                        print("🌟 키라키라가 작별 인사를 완료하여 통화를 정상 종료합니다.")
+                                        await asyncio.sleep(2.5)  # Allow audio playback to complete
+                                        await websocket.send_text(json.dumps({"type": "call_ended"}))
+                                        call_active = False
+                                        break
+
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
                     print(f"[Gemini 스트리밍 오류] {e}")
 
-            # 4. Stage Progress Monitor
+            # 4. Stage Progress Monitor (8-minute tracker)
             async def monitor_stages():
                 nonlocal call_active
                 last_stage = 0
@@ -255,16 +320,20 @@ async def websocket_call_endpoint(websocket: WebSocket):
                     if stage_num != last_stage:
                         last_stage = stage_num
                         reporter.update_stage(stage_num, stage_title, level_desc)
-                        await websocket.send_text(
-                            json.dumps({
-                                "type": "stage_update",
-                                "stage": stage_num,
-                                "title": stage_title,
-                                "level": level_desc,
-                            })
-                        )
+                        try:
+                            await websocket.send_text(
+                                json.dumps({
+                                    "type": "stage_update",
+                                    "stage": stage_num,
+                                    "title": stage_title,
+                                    "level": level_desc,
+                                })
+                            )
+                        except Exception:
+                            pass
 
                     if elapsed >= TOTAL_CALL_SECONDS:
+                        print("⏰ 예정된 8분 통화 시간이 완료되었습니다.")
                         call_active = False
                         break
 
@@ -274,14 +343,26 @@ async def websocket_call_endpoint(websocket: WebSocket):
             t_gemini = asyncio.create_task(forward_gemini_to_browser())
             t_monitor = asyncio.create_task(monitor_stages())
 
-            done, pending = await asyncio.wait(
-                [t_browser, t_gemini, t_monitor],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            # Keep session active until user ends, verbal farewell finishes, or 8 minutes pass
+            while call_active:
+                done, pending = await asyncio.wait(
+                    [t_browser, t_gemini, t_monitor],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not call_active:
+                    break
+
+                # If a task finished unexpectedly, log details
+                for task in done:
+                    exc = task.exception()
+                    if exc:
+                        print(f"[세션 태스크 오류] {exc}")
+                break
 
             call_active = False
             for t in [t_browser, t_gemini, t_monitor]:
-                t.cancel()
+                if not t.done():
+                    t.cancel()
 
     except WebSocketDisconnect:
         print("\n브라우저 연결이 종료되었습니다.")

@@ -22,6 +22,13 @@ from audio_stream import AudioManager
 from reporter import SessionReporter
 from feedback_generator import generate_post_call_feedback
 
+# Keywords indicating user wishes to end call verbally
+END_CALL_KEYWORDS = [
+    "그만하자", "그만할래", "그만할게", "그만할", "통화 종료", "전화 끊",
+    "끊을게", "끊자", "이제 갈게", "또 봐", "バイバイ", "ばいばい",
+    "切るね", "じゃあね", "またね", "おしまい", "今日はここまで"
+]
+
 
 def get_current_stage_info(elapsed_seconds: int) -> tuple[int, str, str]:
     """Returns (stage_number, stage_title, level_description) based on elapsed time."""
@@ -105,7 +112,12 @@ async def run_kirakira_session():
                     role="user",
                     parts=[
                         types.Part.from_text(
-                            text="（通話が繋がりました。明るく元気な日本語で、久しぶりに友達から電話がかかってきたような親しい挨拶をしてください！）"
+                            text=(
+                                "（通話が繋がりました。目標レベルはJLPT N4です。"
+                                "親しい友達から電話がかかってきた時のように「もしもし〜！元気だった？今日何してたの？」と"
+                                "明るく挨拶して質問を1つだけ投げかけ、相手の返事を待ってください。"
+                                "絶対に自分から電話を切るような挨拶はしないでください。）"
+                            )
                         )
                     ],
                 ),
@@ -122,13 +134,20 @@ async def run_kirakira_session():
                     if chunk:
                         try:
                             await session.send_realtime_input(
+                                audio=types.Blob(
+                                    data=chunk,
+                                    mime_type="audio/pcm;rate=16000",
+                                )
+                            )
+                        except TypeError:
+                            await session.send_realtime_input(
                                 media=types.Blob(
                                     data=chunk,
                                     mime_type="audio/pcm;rate=16000",
                                 )
                             )
                         except Exception:
-                            break
+                            pass
                     await asyncio.sleep(0.005)
 
             async def receive_gemini_responses():
@@ -139,6 +158,9 @@ async def run_kirakira_session():
 
                 try:
                     async for response in session.receive():
+                        if not call_active:
+                            break
+
                         sc = response.server_content
                         if sc is not None:
                             # 1. Interruption handling (User started speaking)
@@ -157,6 +179,24 @@ async def run_kirakira_session():
                                         reporter.add_transcript("나(학습자)", user_speech, elapsed)
                                         sys.stdout.write("\r" + " " * 75 + "\r")
                                         print(f"[{time_tag}] 👤 나: {user_speech}")
+
+                                        # Check if user verbally wants to end call
+                                        if any(k in user_speech for k in END_CALL_KEYWORDS):
+                                            await session.send_client_content(
+                                                turns=types.Content(
+                                                    role="user",
+                                                    parts=[
+                                                        types.Part.from_text(
+                                                            text=(
+                                                                "（ユーザーが通話を終えたいと言いました。"
+                                                                "今日のお礼と明るく温かいお別れの挨拶をして、文末に必ず [CALL_END] を付けてください。）"
+                                                            )
+                                                        )
+                                                    ],
+                                                ),
+                                                turn_complete=True,
+                                            )
+
                                     current_user_text = ""
 
                             # 3. Model turn (Audio playback)
@@ -177,11 +217,22 @@ async def run_kirakira_session():
                                 if ai_speech:
                                     elapsed = int(time.time() - start_time)
                                     time_tag = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
-                                    reporter.add_transcript("키라키라", ai_speech, elapsed)
 
+                                    call_ended_by_ai = False
+                                    if "[CALL_END]" in ai_speech:
+                                        ai_speech = ai_speech.replace("[CALL_END]", "").strip()
+                                        call_ended_by_ai = True
+
+                                    reporter.add_transcript("키라키라", ai_speech, elapsed)
                                     sys.stdout.write("\r" + " " * 75 + "\r")
                                     print(f"[{time_tag}] 🌟 키라키라: {ai_speech}")
                                     current_ai_text = ""
+
+                                    if call_ended_by_ai:
+                                        print("\n🌟 키라키라가 작별 인사를 마쳐 통화를 종료합니다.")
+                                        await asyncio.sleep(2.0)
+                                        call_active = False
+                                        break
 
                 except asyncio.CancelledError:
                     pass
@@ -218,14 +269,23 @@ async def run_kirakira_session():
             recv_task = asyncio.create_task(receive_gemini_responses())
             monitor_task = asyncio.create_task(monitor_call_progress())
 
-            done, pending = await asyncio.wait(
-                [monitor_task, recv_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            while call_active:
+                done, pending = await asyncio.wait(
+                    [monitor_task, recv_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not call_active:
+                    break
+                for task in done:
+                    exc = task.exception()
+                    if exc:
+                        print(f"[태스크 예외 발생] {exc}")
+                break
 
             call_active = False
             for task in [mic_task, recv_task, monitor_task, player_task]:
-                task.cancel()
+                if not task.done():
+                    task.cancel()
 
     except KeyboardInterrupt:
         sys.stdout.write("\r" + " " * 75 + "\r")

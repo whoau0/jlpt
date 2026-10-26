@@ -92,7 +92,7 @@ def generate_post_call_feedback(transcript_records: list[dict], duration_seconds
 
     print(f"\n📊 [피드백 & {curr_level} 평가 생성 중] 키라키라가 레벨 성취도를 분석하고 있습니다...")
 
-    candidate_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-flash-latest"]
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"]
     response = None
 
     for model_name in candidate_models:
