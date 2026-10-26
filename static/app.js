@@ -7,6 +7,7 @@ let callStartTime = null;
 let timerInterval = null;
 let isCallActive = false;
 let isAiSpeaking = false;
+let activeAudioSources = 0;
 
 // UI Elements
 const liveDot = document.getElementById("liveDot");
@@ -35,15 +36,18 @@ const historyModal = document.getElementById("historyModal");
 const closeHistoryModalBtn = document.getElementById("closeHistoryModalBtn");
 const historyListContent = document.getElementById("historyListContent");
 
-// Downsample raw mic float32 buffer to 16000Hz PCM
+// Downsample raw mic float32 buffer to 16000Hz PCM with linear interpolation
 function downsampleTo16k(inputData, inputSampleRate) {
   if (!inputSampleRate || inputSampleRate === 16000) return inputData;
   const ratio = inputSampleRate / 16000;
   const newLength = Math.round(inputData.length / ratio);
   const result = new Float32Array(newLength);
   for (let i = 0; i < newLength; i++) {
-    const srcIndex = Math.min(Math.round(i * ratio), inputData.length - 1);
-    result[i] = inputData[srcIndex];
+    const srcPos = i * ratio;
+    const srcIndex = Math.floor(srcPos);
+    const frac = srcPos - srcIndex;
+    const nextIndex = Math.min(srcIndex + 1, inputData.length - 1);
+    result[i] = inputData[srcIndex] * (1 - frac) + inputData[nextIndex] * frac;
   }
   return result;
 }
@@ -153,13 +157,13 @@ startCallBtn.addEventListener("click", async () => {
         if (!isCallActive || !ws || ws.readyState !== WebSocket.OPEN) return;
         const rawInput = e.inputBuffer.getChannelData(0);
 
-        // Detect speaking volume for live visual feedback
+        // Detect speaking volume for live visual feedback (threshold tuned for phone microphones)
         let sum = 0;
         for (let i = 0; i < rawInput.length; i++) {
           sum += rawInput[i] * rawInput[i];
         }
         const rms = Math.sqrt(sum / rawInput.length);
-        if (rms > 0.02) {
+        if (rms > 0.008) {
           if (!isAiSpeaking) callStatusText.textContent = "🎙️ 내 목소리 감지됨";
         } else if (!isAiSpeaking) {
           callStatusText.textContent = "👂 듣는 중...";
@@ -257,11 +261,15 @@ function playIncomingAudio(arrayBuffer) {
   nextPlaybackTime += audioBuffer.duration;
 
   // Pulse animation & state while playing
+  activeAudioSources++;
   isAiSpeaking = true;
   setSpeakingState(true);
   callStatusText.textContent = "🌟 키라키라 말하는 중...";
+
   bufferSource.onended = () => {
-    if (audioContext && audioContext.currentTime >= nextPlaybackTime - 0.1) {
+    activeAudioSources--;
+    if (activeAudioSources <= 0) {
+      activeAudioSources = 0;
       isAiSpeaking = false;
       setSpeakingState(false);
       callStatusText.textContent = "👂 듣는 중...";
@@ -280,6 +288,7 @@ function handleServerEvent(data) {
     subtitlesBox.scrollTop = subtitlesBox.scrollHeight;
   } else if (data.type === "interrupted") {
     nextPlaybackTime = audioContext ? audioContext.currentTime : 0;
+    activeAudioSources = 0;
     isAiSpeaking = false;
     setSpeakingState(false);
     callStatusText.textContent = "👂 듣는 중...";

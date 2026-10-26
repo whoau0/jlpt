@@ -169,18 +169,33 @@ async def websocket_call_endpoint(websocket: WebSocket):
             # 2. Receive Audio and Text from Browser
             async def receive_from_browser():
                 nonlocal call_active, waiting_for_farewell
+                chunk_count = 0
                 while call_active:
                     try:
                         message = await websocket.receive()
                         if "bytes" in message and message["bytes"]:
                             chunk = message["bytes"]
-                            # Stream PCM chunk to Gemini Live API (Google AI Studio protocol requires mediaChunks via media=)
-                            await session.send_realtime_input(
-                                media=types.Blob(
-                                    data=chunk,
-                                    mime_type="audio/pcm;rate=16000",
+                            chunk_count += 1
+                            if chunk_count == 1:
+                                print(f"🎙️ [웹소켓] 마이크 오디오 첫 수신! (크기: {len(chunk)}B)")
+                            elif chunk_count % 150 == 0:
+                                print(f"🎙️ [웹소켓] 마이크 스트리밍 진행 중... ({chunk_count}청크)")
+
+                            # Stream PCM chunk to Gemini Live API using audio= (Google AI Studio standard)
+                            try:
+                                await session.send_realtime_input(
+                                    audio=types.Blob(
+                                        data=chunk,
+                                        mime_type="audio/pcm;rate=16000",
+                                    )
                                 )
-                            )
+                            except TypeError:
+                                await session.send_realtime_input(
+                                    media=types.Blob(
+                                        data=chunk,
+                                        mime_type="audio/pcm;rate=16000",
+                                    )
+                                )
                         elif "text" in message and message["text"]:
                             data = json.loads(message["text"])
                             msg_type = data.get("type")
@@ -209,6 +224,7 @@ async def websocket_call_endpoint(websocket: WebSocket):
                         call_active = False
                         break
                     except Exception as e:
+                        print(f"⚠️ [브라우저 수신 처리 오류] {e}")
                         if call_active:
                             await asyncio.sleep(0.01)
 
@@ -255,6 +271,7 @@ async def websocket_call_endpoint(websocket: WebSocket):
                                         speech = current_user_text.strip()
                                         if speech:
                                             elapsed = int(time.time() - start_time)
+                                            print(f"👤 [사용자 음성 인식됨] ({elapsed}초): '{speech}'")
                                             reporter.add_transcript("나(학습자)", speech, elapsed)
                                             try:
                                                 await websocket.send_text(
@@ -308,6 +325,7 @@ async def websocket_call_endpoint(websocket: WebSocket):
                                     ai_speech = current_ai_text.strip()
                                     if ai_speech:
                                         elapsed = int(time.time() - start_time)
+                                        print(f"🌟 [키라키라 답변 완료] ({elapsed}초): '{ai_speech}'")
                                         reporter.add_transcript("키라키라", ai_speech, elapsed)
                                         try:
                                             await websocket.send_text(
